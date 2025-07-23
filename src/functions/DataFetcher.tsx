@@ -1,59 +1,91 @@
+// DataFetcher.tsx
 import { useEffect, useState } from 'react';
-import type { OpenMeteoResponse } from '../types/DashboardTypes';
+import type { RootInterface } from '../types/DashboardTypes';
+const CACHE_KEY_PREFIX = 'weather_data_';
+const CACHE_DURATION_MINUTES = 1;
 
-interface DataFetcherOutput {
-    data: OpenMeteoResponse | null;
-    loading: boolean;
-    error: string | null;
+function isCacheValid(timestamp: number) {
+    const now = Date.now();
+    const ageMinutes = (now - timestamp) / (1000 * 60);
+    return ageMinutes < CACHE_DURATION_MINUTES;
 }
 
-export default function DataFetcher(city: string): DataFetcherOutput {
 
-    const [data, setData] = useState<OpenMeteoResponse | null>(null);
+const cityCoords: Record<string, { lat: number; lon: number; timezone: string }> = {
+    guayaquil: { lat: -2.1962, lon: -79.8862, timezone: 'America/Guayaquil' },
+    quito: { lat: -0.1807, lon: -78.4678, timezone: 'America/Guayaquil' },
+    manta: { lat: -0.9677, lon: -80.7089, timezone: 'America/Guayaquil' },
+    cuenca: { lat: -2.9006, lon: -79.0045, timezone: 'America/Guayaquil' },
+};
+
+export default function DataFetcher(city: string) {
+    const [data, setData] = useState<RootInterface | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        // Coordenadas por ciudad
-        const cities: Record<string, { lat: number, lon: number }> = {
-            guayaquil: { lat: -2.170998, lon: -79.922359 },
-            quito: { lat: -0.180653, lon: -78.467834 },
-            manta: { lat: -0.967653, lon: -80.708910 },
-            cuenca: { lat: -2.900128, lon: -79.005896 }
-        };
-        const { lat, lon } = cities[city] || cities.guayaquil;
-        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,wind_speed_10m&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m&timezone=America%2FChicago`
-        // const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m&timezone=America%2FChicago`;
+    if (!city || !cityCoords[city]) {
+        setData(null);
+        setLoading(false);
+        setError(null);
+        return;
+    }
 
-        const fetchData = async () => {
+    setLoading(true);
+    setError(null);
 
-            try {
+    const { lat, lon, timezone } = cityCoords[city];
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,precipitation_probability&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m&timezone=${timezone}`
+    // const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=relative_humidity_2m,apparent_temperature,wind_speed_10m,temperature_2m&timezone=${timezone}`;
+    const cacheKey = `${CACHE_KEY_PREFIX}${city}`;
 
-                const response = await fetch(url);
-
-                if (!response.ok) {
-                    throw new Error(`Error HTTP: ${response.status} - ${response.statusText}`);
+    const fetchData = async () => {
+        try {
+            // Intenta leer del localStorage
+            const cached = localStorage.getItem(cacheKey);
+            if (cached) {
+                const parsed = JSON.parse(cached);
+                if (isCacheValid(parsed.timestamp)) {
+                    setData(parsed.data);
+                    setLoading(false);
+                    return;
                 }
-
-                const result: OpenMeteoResponse = await response.json();
-                console.log("datos: ", result)
-                setData(result);
-
-            } catch (err: any) {
-
-                if (err instanceof Error) {
-                    setError(err.message);
-                } else {
-                    setError("Ocurrió un error desconocido al obtener los datos.");
-                }
-
-            } finally {
-                setLoading(false);
             }
-        };
 
-        fetchData();
-    }, [city]); // Se ejecuta cada vez que cambia la ciudad
+            // Si no hay cache o es inválido, hacer fetch
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`Error HTTP: ${response.status} - ${response.statusText}`);
+            }
+
+            const result: RootInterface = await response.json();
+            setData(result);
+
+            // Guardar en cache con timestamp
+            localStorage.setItem(cacheKey, JSON.stringify({
+                data: result,
+                timestamp: Date.now()
+            }));
+        } catch (err: any) {
+            console.error('Fallo en la obtención de datos:', err);
+
+            // Si falla, intenta usar el caché viejo si existe
+            const cached = localStorage.getItem(cacheKey);
+            if (cached) {
+                const parsed = JSON.parse(cached);
+                setData(parsed.data);
+                setError("Mostrando datos almacenados por error en la conexión.");
+            } else {
+                setError("No se pudieron obtener los datos.");
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    fetchData();
+}, [city]);
+
 
     return { data, loading, error };
 }
